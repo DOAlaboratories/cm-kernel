@@ -15,6 +15,7 @@
 #include <linux/seqlock.h>
 #include <linux/nodemask.h>
 #include <linux/pageblock-flags.h>
+#include <linux/timer.h>
 #include <linux/bounds.h>
 #include <asm/atomic.h>
 #include <asm/page.h>
@@ -159,12 +160,14 @@ enum zone_watermarks {
 	WMARK_MIN,
 	WMARK_LOW,
 	WMARK_HIGH,
+	WMARK_LOTS,
 	NR_WMARK
 };
 
 #define min_wmark_pages(z) (z->watermark[WMARK_MIN])
 #define low_wmark_pages(z) (z->watermark[WMARK_LOW])
 #define high_wmark_pages(z) (z->watermark[WMARK_HIGH])
+#define lots_wmark_pages(z) (z->watermark[WMARK_LOTS])
 
 struct per_cpu_pages {
 	int count;		/* number of pages in the list */
@@ -290,13 +293,6 @@ struct zone {
 	unsigned long watermark[NR_WMARK];
 
 	/*
-	 * When free pages are below this point, additional steps are taken
-	 * when reading the number of free pages to avoid per-cpu counter
-	 * drift allowing watermarks to be breached
-	 */
-	unsigned long percpu_drift_mark;
-
-	/*
 	 * We don't know if the memory that we're going to allocate will be freeable
 	 * or/and it will be released eventually, so to avoid totally wasting several
 	 * GB of ram we must reserve some of the lower zone memory (otherwise we risk
@@ -339,7 +335,7 @@ struct zone {
 	ZONE_PADDING(_pad1_)
 
 	/* Fields commonly accessed by the page reclaim scanner */
-	spinlock_t		lru_lock;	
+	spinlock_t		lru_lock;
 	struct zone_lru {
 		struct list_head list;
 	} lru[NR_LRU_LISTS];
@@ -466,12 +462,6 @@ static inline int zone_is_oom_locked(const struct zone *zone)
 {
 	return test_bit(ZONE_OOM_LOCKED, &zone->flags);
 }
-
-#ifdef CONFIG_SMP
-unsigned long zone_nr_free_pages(struct zone *zone);
-#else
-#define zone_nr_free_pages(zone) zone_page_state(zone, NR_FREE_PAGES)
-#endif /* CONFIG_SMP */
 
 /*
  * The "priority" of VM scanning is how much of the queues we will scan in one
@@ -652,6 +642,7 @@ typedef struct pglist_data {
 	wait_queue_head_t kswapd_wait;
 	struct task_struct *kswapd;
 	int kswapd_max_order;
+	struct timer_list watermark_timer;
 } pg_data_t;
 
 #define node_present_pages(nid)	(NODE_DATA(nid)->node_present_pages)
@@ -668,7 +659,7 @@ typedef struct pglist_data {
 void get_zone_counts(unsigned long *active, unsigned long *inactive,
 			unsigned long *free);
 void build_all_zonelists(void);
-void wakeup_kswapd(struct zone *zone, int order);
+void wakeup_kswapd(struct zone *zone, int order, struct task_struct *p);
 int zone_watermark_ok(struct zone *z, int order, unsigned long mark,
 		int classzone_idx, int alloc_flags);
 enum memmap_context {

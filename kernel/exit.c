@@ -92,14 +92,6 @@ static void __exit_signal(struct task_struct *tsk)
 		posix_cpu_timers_exit_group(tsk);
 	else {
 		/*
-		 * This can only happen if the caller is de_thread().
-		 * FIXME: this is the temporary hack, we should teach
-		 * posix-cpu-timers to handle this case correctly.
-		 */
-		if (unlikely(has_group_leader_pid(tsk)))
-			posix_cpu_timers_exit_group(tsk);
-
-		/*
 		 * If there is any task waiting for the group exit
 		 * then notify it:
 		 */
@@ -128,7 +120,7 @@ static void __exit_signal(struct task_struct *tsk)
 		sig->inblock += task_io_get_inblock(tsk);
 		sig->oublock += task_io_get_oublock(tsk);
 		task_io_accounting_add(&sig->ioac, &tsk->ioac);
-		sig->sum_sched_runtime += tsk->se.sum_exec_runtime;
+		sig->sum_sched_runtime += tsk_seruntime(tsk);
 		sig = NULL; /* Marker for below. */
 	}
 
@@ -907,15 +899,6 @@ NORET_TYPE void do_exit(long code)
 	if (unlikely(!tsk->pid))
 		panic("Attempted to kill the idle task!");
 
-	/*
-	 * If do_exit is called because this processes oopsed, it's possible
-	 * that get_fs() was left as KERNEL_DS, so reset it to USER_DS before
-	 * continuing. Amongst other possible reasons, this is to prevent
-	 * mm_release()->clear_child_tid() from writing to a user-controlled
-	 * kernel address.
-	 */
-	set_fs(USER_DS);
-
 	tracehook_report_exit(&code);
 
 	validate_creds_for_do_exit(tsk);
@@ -1387,7 +1370,8 @@ static int wait_task_stopped(struct wait_opts *wo,
 	if (!unlikely(wo->wo_flags & WNOWAIT))
 		*p_code = 0;
 
-	uid = task_uid(p);
+	/* don't need the RCU readlock here as we're holding a spinlock */
+	uid = __task_cred(p)->uid;
 unlock_sig:
 	spin_unlock_irq(&p->sighand->siglock);
 	if (!exit_code)
@@ -1460,7 +1444,7 @@ static int wait_task_continued(struct wait_opts *wo, struct task_struct *p)
 	}
 	if (!unlikely(wo->wo_flags & WNOWAIT))
 		p->signal->flags &= ~SIGNAL_STOP_CONTINUED;
-	uid = task_uid(p);
+	uid = __task_cred(p)->uid;
 	spin_unlock_irq(&p->sighand->siglock);
 
 	pid = task_pid_vnr(p);
